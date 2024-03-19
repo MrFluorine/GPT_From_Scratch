@@ -5,9 +5,9 @@ from torch.nn import functional as F
 # hyperparameters
 batch_size = 32    # How many independent sequence will be processed in parallel?
 block_size = 8     # What is the maximum context length for predictions?
-max_iters = 3000   
+max_iters = 5000   
 eval_interval = 300
-learning_rate = 1e-2
+learning_rate = 1e-3
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
 n_embed = 32
@@ -56,6 +56,37 @@ def estimate_loss():
     model.train()
     return out
 
+class Head(nn.Module):
+
+    """ one head of the self-attention"""
+    def __init__(self, head_size):
+        super().__init__()
+        self.key = nn.Linear(n_embed, head_size, bias = False)
+        self.query = nn.Linear(n_embed, head_size, bias = False)
+        self.value = nn.Linear(n_embed, head_size, bias = False)
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+    
+    def forward(self, x):
+        B, T, C = x.shape
+        k = self.key(x)           #(B, T, head_size)
+        q = self.query(x)         #(B, T, head_size)
+        # compute the attention scores ("affinities")
+        wei = q @ k.transpose(-2, -1)*C**-0.5      #(B, T, head_size) @ (B, head_size, T)----->(B, head_size, T)
+        wei = wei.masked_fill(self.tril[:T, :T]==0, float('-inf'))
+        wei = F.softmax(wei, dim=-1)
+        #perform the weighted aggeration of the values
+        v = self.value(x)         #(B, T, head_size)
+        out = wei @ v             #(B, head_size, T) @ (B, T, head_size)
+        return out
+
+class MultiHeadAttention(nn.Module):
+    """Multiple heads of self-attention in parallel"""
+    def __init__(self, num_head, head_size):
+        super().__init__()
+        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_head)])
+    def forward(self, x):
+        return torch.cat([h(x) for h in self.heads], dim=-1)
+
 # super simple bigram model
 class BigramLanguageModel(nn.Module):
 
@@ -65,6 +96,7 @@ class BigramLanguageModel(nn.Module):
         #each token directly reads off the logits for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size, n_embed)
         self.position_embedding_table = nn.Embedding(block_size,n_embed )
+        self.sa_head = MultiHeadAttention(4, n_embed//4)    
         self.lm_head = nn.Linear(n_embed, vocab_size)
     
 
@@ -74,6 +106,7 @@ class BigramLanguageModel(nn.Module):
         tok_emb = self.token_embedding_table(idx) # (B, T, C)
         pos_emb = self.position_embedding_table(torch.arange(T, device=device))  #(T, C)
         x = tok_emb + pos_emb
+        x = self.sa_head(x)       # apply one head of self attention
         logits = self.lm_head(x)
         if targets == None:
             loss = None
@@ -86,8 +119,11 @@ class BigramLanguageModel(nn.Module):
     def generate(self, idx, max_new_token):
         #idx is a (B,T) array of indices in current context
         for _ in range(max_new_token):
+            # crop the context
+
+            idx_cont = idx[:, -block_size:]
             #get the prediction
-            logits, loss = self(idx) #(B, T, C)
+            logits, loss = self(idx_cont) #(B, T, C)
             #focus only in the last time step
             logits = logits[:, -1, :] # becomes (B,C)
             #apply softmax to get probablities
@@ -119,5 +155,6 @@ for iter in range(max_iters):
     optimiser.step()
 
 # generate from model
-context = torch.zeros((1,1), dtype=torch.long, device=device)
+context = torch.zeros((2,3), dtype=torch.long, device=device)
+
 print(decode(m.generate(context, max_new_token=500)[0].tolist()))
