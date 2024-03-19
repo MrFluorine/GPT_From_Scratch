@@ -84,9 +84,36 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, num_head, head_size):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_head)])
-    def forward(self, x):
-        return torch.cat([h(x) for h in self.heads], dim=-1)
+        self.proj = nn.Linear(n_embed, n_embed)
 
+    def forward(self, x):
+        out = torch.cat([h(x) for h in self.heads], dim=-1)
+        out = self.proj(out)
+        return out
+class FeedForward(nn.Module):
+    """ a simple linear layer followed by a non linearity"""
+    def __init__(self, n_embed):
+        super().__init__()
+        self.net = nn.Sequential( nn.Linear(n_embed, 4*n_embed),
+                                 nn.ReLU(),
+                                 nn.Linear(4*n_embed, n_embed),
+                    )
+    def forward(self, x):
+        return self.net(x)
+class Block(nn.Module):
+    """Transformer block: communication followed by computation"""
+    def __init__(self, n_embed, n_head):
+        # n_embed: embedding dimenssion, n_head: number of attention heads we would like
+        super().__init__()
+        head_size = n_embed//n_head
+        self.sa = MultiHeadAttention(n_head, head_size)
+        self.ffwd = FeedForward(n_embed)
+    
+    def forward(self, x):
+        x = x + self.sa(x)
+        x = x + self.ffwd(x)
+        return x
+    
 # super simple bigram model
 class BigramLanguageModel(nn.Module):
 
@@ -96,7 +123,11 @@ class BigramLanguageModel(nn.Module):
         #each token directly reads off the logits for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size, n_embed)
         self.position_embedding_table = nn.Embedding(block_size,n_embed )
-        self.sa_head = MultiHeadAttention(4, n_embed//4)    
+        self.blocks = nn.Sequential(
+            Block(n_embed, n_head=4),
+            Block(n_embed, n_head=4),
+            Block(n_embed, n_head=4),
+        )
         self.lm_head = nn.Linear(n_embed, vocab_size)
     
 
@@ -106,8 +137,9 @@ class BigramLanguageModel(nn.Module):
         tok_emb = self.token_embedding_table(idx) # (B, T, C)
         pos_emb = self.position_embedding_table(torch.arange(T, device=device))  #(T, C)
         x = tok_emb + pos_emb
-        x = self.sa_head(x)       # apply one head of self attention
+        x = self.blocks(x)          #(B, T, C)
         logits = self.lm_head(x)
+
         if targets == None:
             loss = None
         else:
@@ -121,9 +153,9 @@ class BigramLanguageModel(nn.Module):
         for _ in range(max_new_token):
             # crop the context
 
-            idx_cont = idx[:, -block_size:]
+            idx_const = idx[:, -block_size:]
             #get the prediction
-            logits, loss = self(idx_cont) #(B, T, C)
+            logits, loss = self(idx_const) #(B, T, C)
             #focus only in the last time step
             logits = logits[:, -1, :] # becomes (B,C)
             #apply softmax to get probablities
