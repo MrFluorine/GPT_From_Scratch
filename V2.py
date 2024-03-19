@@ -153,9 +153,9 @@ class BigramLanguageModel(nn.Module):
         for _ in range(max_new_token):
             # crop the context
 
-            idx_const = idx[:, -block_size:]
+            idx_cont = idx[:, -block_size:]
             #get the prediction
-            logits, loss = self(idx_const) #(B, T, C)
+            logits, loss = self(idx_cont) #(B, T, C)
             #focus only in the last time step
             logits = logits[:, -1, :] # becomes (B,C)
             #apply softmax to get probablities
